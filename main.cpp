@@ -306,7 +306,7 @@ int main(){
     {        
 
         // read potentiometer value
-        data[0] = (uint8_t)adc_read();
+        data[0] = (uint8_t) ((adc_read()) / 16);
 
 
         i2c_write_timeout_us(i2c1, I2C_SLAVE_ADDRESS, data, 1, true, 100);

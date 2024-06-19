@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "pico/stdlib.h"
 #include "hardware/dma.h"
@@ -8,6 +9,12 @@
 #include "hardware/irq.h"
 #include "hardware/i2c.h"
 #include "pico/i2c_slave.h"
+
+// WIFI
+#include "pico/cyw43_arch.h"
+#include "lwip/pbuf.h"
+#include "lwip/tcp.h"
+
 
 #include "pulse_analyzer.pio.h"
 
@@ -18,6 +25,13 @@
 #define SDA 4
 #define SCL 5
 #define LED_PIN 25
+
+#define WIFI_SSID "PiSetup"
+#define WIFI_PASSWORD "raspberry123"
+
+#define TCP_PORT 4242
+#define DEBUG_printf printf
+#define BUF_SIZE 1
 
 uint BASE_CLK_FREQ = 125000000;
 float LATEST_DUTY;
@@ -169,11 +183,90 @@ static void setup_slave() {
     i2c_slave_init(i2c0, I2C_SLAVE_ADDRESS, &i2c_slave_handler);
 }
 
+void wifi_init() {
+    if (cyw43_arch_init()) {
+        printf("failed to initialize\n");
+        return;
+    }
+
+    cyw43_arch_enable_sta_mode();
+
+    printf("Connecting to Wi-Fi...\n");
+    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 10000)) {
+        printf("failed to connect\n");
+        cyw43_arch_deinit();
+        return;
+    }
+
+    printf("Connected to Wi-Fi\n");
+}
+
+typedef struct TCP_SERVER_T_ {
+    struct tcp_pcb *server_pcb;
+    struct tcp_pcb *client_pcb;
+    uint8_t buffer_sent[BUF_SIZE];
+    int sent_len;
+} TCP_SERVER_T;
+
+static TCP_SERVER_T* tcp_server_init(void) {
+    TCP_SERVER_T *state = static_cast<TCP_SERVER_T*>(calloc(1, sizeof(TCP_SERVER_T)));
+    return state;
+}
+
+static err_t tcp_server_close(void *arg) {
+    TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
+    if (state->client_pcb) {
+        tcp_close(state->client_pcb);
+        state->client_pcb = NULL;
+    }
+    if (state->server_pcb) {
+        tcp_close(state->server_pcb);
+        state->server_pcb = NULL;
+    }
+    return ERR_OK;
+}
+
+static err_t tcp_server_send_data(void *arg, struct tcp_pcb *tpcb) {
+    TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
+    memset(state->buffer_sent, SHORTED, BUF_SIZE);
+    state->sent_len = 0;
+    return tcp_write(tpcb, state->buffer_sent, BUF_SIZE, TCP_WRITE_FLAG_COPY);
+}
+
+static err_t tcp_server_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
+    TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
+    state->sent_len += len;
+    return tcp_server_send_data(arg, tpcb);
+}
+
+static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
+    TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
+    state->client_pcb = client_pcb;
+    tcp_arg(client_pcb, state);
+    tcp_sent(client_pcb, tcp_server_sent);
+    return tcp_server_send_data(arg, client_pcb);
+}
+
+static bool tcp_server_open(void *arg) {
+    TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
+    struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
+    if (!pcb || tcp_bind(pcb, IP_ANY_TYPE, TCP_PORT) != ERR_OK) {
+        return false;
+    }
+    state->server_pcb = tcp_listen(pcb);
+    tcp_arg(state->server_pcb, state);
+    tcp_accept(state->server_pcb, tcp_server_accept);
+    return true;
+}
+
 int main(){
 
     stdio_init_all(); 
     setup_pwm();
     setup_slave();
+    sleep_ms(10);
+    wifi_init();
+    sleep_ms(10);
 
     pulse_analyzer pulse_analyzer_instance; // Instantiate an object of the pulse_analyzer class
 
@@ -182,8 +275,17 @@ int main(){
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 0);
 
+    TCP_SERVER_T *state = tcp_server_init();
+    if (!state) {
+        return 1;
+    }
+    if (!tcp_server_open(state)) {
+        return 1;
+    }
+
     while (1)
     {        
+
         // Read the duty cycle of the PWM signal
         LATEST_DUTY = pulse_analyzer_instance.read_dutycycle();
         if (LATEST_DUTY > 0.005) {
@@ -195,5 +297,6 @@ int main(){
         }
         
     }
+    free(state);
   
 }

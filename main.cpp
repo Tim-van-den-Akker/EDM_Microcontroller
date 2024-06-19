@@ -21,6 +21,7 @@
 
 uint BASE_CLK_FREQ = 125000000;
 float LATEST_DUTY;
+bool SHORTED;
 
 void setup_pwm() {
     // Tell GPIO 0 and 1 they are allocated to the PWM
@@ -31,11 +32,11 @@ void setup_pwm() {
     uint slice_num = pwm_gpio_to_slice_num(PWM);
     uint ref_slice_num = pwm_gpio_to_slice_num(REF_PWM);
 
-    uint PWM_FREQ = 50000;
-    uint PWM_DUTY = 10;
+    uint PWM_FREQ = 2000;
+    uint PWM_DUTY = 2;
 
     uint REF_PWM_FREQ = 100000;
-    uint REF_PWM_DUTY = 50;
+    uint REF_PWM_DUTY = 10;
     
     uint wrap_value = BASE_CLK_FREQ / PWM_FREQ; // Calculate wrap value
     uint ref_wrap_value = BASE_CLK_FREQ / REF_PWM_FREQ; // Calculate wrap value
@@ -98,6 +99,9 @@ public:
     float read_dutycycle(void)
     {
         read();
+        printf("Pulse width: %d\n", pulsewidth);
+        printf("Period: %d\n", period);
+        printf("Duty cycle: %f\n\n", ((float)pulsewidth / (float)period));
         return ((float)pulsewidth / (float)period);
     }
 
@@ -134,10 +138,11 @@ static const uint I2C_SLAVE_SDA_PIN = PICO_DEFAULT_I2C_SDA_PIN; // 4
 static const uint I2C_SLAVE_SCL_PIN = PICO_DEFAULT_I2C_SCL_PIN; // 5
 
 static void i2c_slave_handler(i2c_inst_t *i2c, i2c_slave_event_t event) {
-    uint8_t data_send = (uint8_t) (LATEST_DUTY);
+    uint8_t data_send = (uint8_t) (SHORTED);
     switch (event) {
     case I2C_SLAVE_RECEIVE: // master has written some data
         printf("Received: %i\n", i2c_read_byte_raw(i2c));
+        // Nothing is yet being done with the received data
 
     case I2C_SLAVE_REQUEST: // master is requesting data
         printf("Requested\n Sending %d\n", data_send);
@@ -175,12 +180,20 @@ int main(){
     // initialise GPIO (Green LED connected to pin 25)
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
-    gpio_put(LED_PIN, 1);
+    gpio_put(LED_PIN, 0);
 
     while (1)
     {        
-        LATEST_DUTY = pulse_analyzer_instance.read_dutycycle(); // Call the member function on the object
-        sleep_ms(10);
+        // Read the duty cycle of the PWM signal
+        LATEST_DUTY = pulse_analyzer_instance.read_dutycycle();
+        if (LATEST_DUTY > 0.005) {
+            SHORTED = true;
+            gpio_put(LED_PIN, 1);
+        } else {
+            SHORTED = false;
+            gpio_put(LED_PIN, 0);
+        }
+        
     }
   
 }

@@ -28,6 +28,7 @@
 #define SCL 5
 #define LED_PIN 25
 
+// WIFI SETUP
 #define WIFI_SSID "PiSetup"
 #define WIFI_PASSWORD "raspberry123"
 
@@ -209,7 +210,9 @@ typedef struct TCP_SERVER_T_ {
     struct tcp_pcb *server_pcb;
     struct tcp_pcb *client_pcb;
     uint8_t buffer_sent[BUF_SIZE];
+    uint8_t buffer_recv[BUF_SIZE];
     int sent_len;
+    int recv_len;
 } TCP_SERVER_T;
 
 static TCP_SERVER_T* tcp_server_init(void) {
@@ -248,12 +251,55 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
     return tcp_server_send_data(arg, tpcb);
 }
 
+static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
+    // printf("tcp_server_recv");
+    TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
+
+    int freq = 0;
+    float duty = 0.0;
+
+    if (err == ERR_OK && p != NULL) {
+        // create string
+        char *data = (char*)calloc(p->len + 1, sizeof(char));
+        memcpy(data, p->payload, p->len);
+        
+        const char *freq_pos = strstr(data, "freq=");
+        if (freq_pos) {
+            // Move past "freq="
+            freq_pos += 5;
+            freq = atoi(freq_pos);
+        }
+
+        // Find "duty="
+        const char *duty_pos = strstr(data, "duty=");
+        if (duty_pos) {
+            // Move past "duty="
+            duty_pos += 5;
+            duty = atof(duty_pos);
+    }
+
+        change_pwm(duty, freq);
+        printf("Received: %s\n", data);
+        printf("Frequency: %d\n", freq);
+        printf("Duty cycle: %f\n", duty);
+
+
+        state->recv_len = p->len;
+        // pbuf_free(p);
+        return ERR_OK;
+    }
+    return ERR_OK;
+}
+
+
+
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
     // printf("tcp_server_accept");
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
     state->client_pcb = client_pcb;
     tcp_arg(client_pcb, state);
     tcp_sent(client_pcb, tcp_server_sent);
+    tcp_recv(client_pcb, tcp_server_recv);
     return tcp_server_send_data(arg, client_pcb);
 }
 

@@ -4,10 +4,12 @@
 
 #include "pico/stdlib.h"
 #include "hardware/dma.h"
+#include "hardware/adc.h"
 #include "hardware/pwm.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/i2c.h"
+#include "pico/multicore.h"
 #include "pico/i2c_slave.h"
 
 // WIFI
@@ -35,7 +37,9 @@
 
 uint BASE_CLK_FREQ = 125000000;
 float LATEST_DUTY;
-bool SHORTED;
+bool SHORTED = false;
+
+uint8_t DATA_SEND;
 
 void setup_pwm() {
     // Tell GPIO 0 and 1 they are allocated to the PWM
@@ -113,12 +117,12 @@ public:
     float read_dutycycle(void)
     {
         read();
-        printf("Pulse width: %d\n", pulsewidth);
-        printf("Period: %d\n", period);
-        printf("Duty cycle: %f\n\n", ((float)pulsewidth / (float)period));
+        // printf("Pulse width: %d\n", pulsewidth);
+        // printf("Period: %d\n", period);
+        // printf("Duty cycle: %f\n\n", ((float)pulsewidth / (float)period));
         return ((float)pulsewidth / (float)period);
     }
-
+ 
 private:
     // read the period and pulsewidth
     void read(void)
@@ -210,10 +214,12 @@ typedef struct TCP_SERVER_T_ {
 
 static TCP_SERVER_T* tcp_server_init(void) {
     TCP_SERVER_T *state = static_cast<TCP_SERVER_T*>(calloc(1, sizeof(TCP_SERVER_T)));
+    // printf("tcp_server_init");
     return state;
 }
 
 static err_t tcp_server_close(void *arg) {
+    // printf("tcp_server_close");
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
     if (state->client_pcb) {
         tcp_close(state->client_pcb);
@@ -227,19 +233,23 @@ static err_t tcp_server_close(void *arg) {
 }
 
 static err_t tcp_server_send_data(void *arg, struct tcp_pcb *tpcb) {
+    // printf("tcp_server_send_data");
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
-    memset(state->buffer_sent, SHORTED, BUF_SIZE);
+    memset(state->buffer_sent, DATA_SEND, BUF_SIZE);
+    printf("Sending %d\n", state->buffer_sent[0]);
     state->sent_len = 0;
     return tcp_write(tpcb, state->buffer_sent, BUF_SIZE, TCP_WRITE_FLAG_COPY);
 }
 
 static err_t tcp_server_sent(void *arg, struct tcp_pcb *tpcb, u16_t len) {
+    // printf("tcp_server_sent");
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
     state->sent_len += len;
     return tcp_server_send_data(arg, tpcb);
 }
 
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
+    // printf("tcp_server_accept");
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
     state->client_pcb = client_pcb;
     tcp_arg(client_pcb, state);
@@ -248,6 +258,7 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
 }
 
 static bool tcp_server_open(void *arg) {
+    // printf("tcp_server_open");
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!pcb || tcp_bind(pcb, IP_ANY_TYPE, TCP_PORT) != ERR_OK) {
@@ -259,6 +270,28 @@ static bool tcp_server_open(void *arg) {
     return true;
 }
 
+// Core 1 Main Code
+void core1_entry() {
+    pulse_analyzer pulse_analyzer_instance; // Instantiate an object of the pulse_analyzer class
+
+    // Infinte While Loop to wait for interrupt
+    while (1){
+        // Read the duty cycle of the PWM signal
+        LATEST_DUTY = pulse_analyzer_instance.read_dutycycle();
+        
+        printf("Duty cycle: %f\n", LATEST_DUTY);
+        if (LATEST_DUTY > 0.01) {
+            SHORTED = false;
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+        } else {
+            SHORTED = true;
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+        }
+        DATA_SEND = (uint8_t) (SHORTED);
+    }
+}
+
+
 int main(){
 
     stdio_init_all(); 
@@ -268,12 +301,12 @@ int main(){
     wifi_init();
     sleep_ms(10);
 
-    pulse_analyzer pulse_analyzer_instance; // Instantiate an object of the pulse_analyzer class
-
     // initialise GPIO (Green LED connected to pin 25)
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
     gpio_put(LED_PIN, 0);
+
+    multicore_launch_core1(core1_entry);
 
     TCP_SERVER_T *state = tcp_server_init();
     if (!state) {
@@ -285,17 +318,7 @@ int main(){
 
     while (1)
     {        
-
-        // Read the duty cycle of the PWM signal
-        LATEST_DUTY = pulse_analyzer_instance.read_dutycycle();
-        if (LATEST_DUTY > 0.005) {
-            SHORTED = true;
-            gpio_put(LED_PIN, 1);
-        } else {
-            SHORTED = false;
-            gpio_put(LED_PIN, 0);
-        }
-        
+        tight_loop_contents();
     }
     free(state);
   

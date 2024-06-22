@@ -37,6 +37,8 @@
 #define BUF_SIZE 1
 
 uint BASE_CLK_FREQ = 125000000;
+uint GLOBAL_FREQ = 2000;
+
 float LATEST_DUTY;
 bool SHORTED = false;
 
@@ -55,7 +57,7 @@ void setup_pwm() {
     uint PWM_DUTY = 2;
 
     uint REF_PWM_FREQ = 100000;
-    uint REF_PWM_DUTY = 10;
+    uint REF_PWM_DUTY = 40;
     
     uint wrap_value = BASE_CLK_FREQ / PWM_FREQ; // Calculate wrap value
     uint ref_wrap_value = BASE_CLK_FREQ / REF_PWM_FREQ; // Calculate wrap value
@@ -73,10 +75,14 @@ void setup_pwm() {
     /// \end::setup_pwm[]
 }
 
-void change_pwm(uint duty, uint freq) {
-    uint slice_num = pwm_gpio_to_slice_num(0);
+void change_pwm(int freq, float duty) {
     uint wrap_value = BASE_CLK_FREQ / freq;
+    uint slice_num = pwm_gpio_to_slice_num(0);
+    // Disable the PWM before configuring
+    pwm_set_enabled(slice_num, false);
+    pwm_set_wrap(slice_num, wrap_value - 1);
     pwm_set_chan_level(slice_num, PWM, wrap_value * duty / 100);
+    pwm_set_enabled(slice_num, true);
 }
 
 void change_ref_pwm(uint duty, uint freq) {
@@ -131,8 +137,8 @@ private:
         // clear the FIFO: do a new measurement
         pio_sm_clear_fifos(pio, sm);
         // wait for the FIFO to contain two data items: pulsewidth and period
-        while (pio_sm_get_rx_fifo_level(pio, sm) < 2)
-            ;
+            while (pio_sm_get_rx_fifo_level(pio, sm) < 2){
+            }
         // read pulse width from the FIFO
         pulsewidth = pio_sm_get(pio, sm);
         // read period from the FIFO
@@ -268,7 +274,7 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
             // Move past "freq="
             freq_pos += 5;
             freq = atoi(freq_pos);
-        }
+        } 
 
         // Find "duty="
         const char *duty_pos = strstr(data, "duty=");
@@ -278,7 +284,7 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
             duty = atof(duty_pos);
     }
 
-        change_pwm(duty, freq);
+        change_pwm(freq, duty);
         printf("Received: %s\n", data);
         printf("Frequency: %d\n", freq);
         printf("Duty cycle: %f\n", duty);
@@ -320,20 +326,25 @@ static bool tcp_server_open(void *arg) {
 void core1_entry() {
     pulse_analyzer pulse_analyzer_instance; // Instantiate an object of the pulse_analyzer class
 
-    // Infinte While Loop to wait for interrupt
+    // get current time
+    absolute_time_t time_since_last_spark = get_absolute_time();
     while (1){
-        // Read the duty cycle of the PWM signal
-        LATEST_DUTY = pulse_analyzer_instance.read_dutycycle();
         
-        printf("Duty cycle: %f\n", LATEST_DUTY);
-        if (LATEST_DUTY > 0.01) {
-            SHORTED = false;
-            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-        } else {
+        LATEST_DUTY = pulse_analyzer_instance.read_dutycycle();
+        if (LATEST_DUTY < 0.0001) {
+            // turn led on
             SHORTED = true;
+            time_since_last_spark = get_absolute_time();
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+        } else if (absolute_time_diff_us(time_since_last_spark, get_absolute_time()) < 100000){
+            SHORTED = true;
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+        }
+        else {
+            SHORTED = false;
             cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
         }
-        DATA_SEND = (uint8_t) (SHORTED);
+        DATA_SEND = (uint8_t) SHORTED;
     }
 }
 

@@ -85,17 +85,23 @@ void change_pwm(int freq, float duty) {
     pwm_set_enabled(slice_num, true);
 }
 
-void change_ref_pwm(uint duty, uint freq) {
-    uint slice_num = pwm_gpio_to_slice_num(2);
-    uint wrap_value = BASE_CLK_FREQ / freq;
-    pwm_set_chan_level(slice_num, REF_PWM, wrap_value * duty / 100);
+void change_ref_pwm(float voltage) {
+    // convert voltage to duty cycle where 0V is 0% and 3.3V is 100%
+    uint REF_PWM_FREQ = 100000;
+    uint REF_PWM_DUTY = voltage / 3.3;
+
+    uint wrap_value = BASE_CLK_FREQ / REF_PWM_FREQ;
+    uint slice_num = pwm_gpio_to_slice_num(0);
+    // Disable the PWM before configuring
+    pwm_set_enabled(slice_num, false);
+    pwm_set_wrap(slice_num, wrap_value - 1);
+    pwm_set_chan_level(slice_num, PWM, wrap_value * REF_PWM_DUTY);
+    pwm_set_enabled(slice_num, true);
 }
 
 class pulse_analyzer
 {
 public:
-    // constructor
-    // input = pin that receives the PWM pulses.
     pulse_analyzer()
     {
         // pio 0 is used
@@ -282,7 +288,7 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
             // Move past "duty="
             duty_pos += 5;
             duty = atof(duty_pos);
-    }
+        }
 
         change_pwm(freq, duty);
         printf("Received: %s\n", data);
@@ -296,8 +302,6 @@ static err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     }
     return ERR_OK;
 }
-
-
 
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
     // printf("tcp_server_accept");
@@ -347,7 +351,6 @@ void core1_entry() {
         DATA_SEND = (uint8_t) SHORTED;
     }
 }
-
 
 int main(){
 
